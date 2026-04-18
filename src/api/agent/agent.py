@@ -14,10 +14,10 @@ from src.api.agent.tools import *
 from src.logging import logger
 
 class SquadState(TypedDict):
-    user_input: Annotated[HumanMessage, "User's query input."]
+    user_input: str
     messages: Annotated[Sequence[BaseMessage], add_messages]
-    architect_out: Annotated[AIMessage, "Decomposed user's query by architect AI agent."]
-    coder_output: Annotated[AIMessage, "AI agent coder's output on user's query decomposed by Architect AI agent."]
+    architect_out: str
+    coder_output: str
     tester_feedback: Annotated[Sequence[AIMessage], add_messages]
 
 class AgentSquad():
@@ -26,38 +26,37 @@ class AgentSquad():
         self.tools = [python_repl_tool]
 
         openai_model = "gpt-4o-mini"
-        self.architect_llm = ChatOpenAI(openai_model, 
+        self.architect_llm = ChatOpenAI(name=openai_model, 
                                     temperature=0.5,
                                     api_key=config["OPENAI_API_KEY"],
                                     base_url=config["OPENAI_BASE_URL"])
         self.architect_prompt = ChatPromptTemplate.from_messages([
-            ("system", ("You're helpful architect assistant in coding AI agent squad",
+            ("system", """You're helpful architect assistant in coding AI agent squad",
                         "Your responsibility in the first place is to take users' query ",
                         "and decompose it into meaningful technical tasks that will be passed to",
                         " the Coding AI agent that must develop fully-working solution without a single mistake."
-                        )),
+                        """),
             ("human", "{input}"),
         ])
         self.architect = (
             {
                 "input": lambda x: x["input"]
             }
-            | self.self.architect_prompt
+            | self.architect_prompt
             | self.architect_llm
         )
-        self.coder_llm = ChatOpenAI(openai_model, 
+        self.coder_llm = ChatOpenAI(name=openai_model, 
                                     temperature=0.0,
                                     api_key=config["OPENAI_API_KEY"],
                                     base_url=config["OPENAI_BASE_URL"])
         self.code_prompt = ChatPromptTemplate.from_messages([
-            ("system", ("You're a helpful coder in coding AI agent squad",
-                        "Your responsibility in the first place is to take decomposed task from AI assistant architect ",
-                        "and implement all technical tasks with maximum precision and reliability.",
-                        "you must develop a fully working solution that is 100 percent reliable and working. ",
-                        "results of your work would be reviewed by testing system and feedback would be provided ",
-                        "in tester_feedback variable. Don't let the user and your team down you're the heart of the system."
-                        )),
-            ("human", "{architect_out}"),
+            ("system", """You're a helpful coder in an AI squad.
+                        Your task is to take the Architect's plan and implement it in Python.
+                        - Provide ONLY the Python code.
+                        - Ensure the code is self-contained and runnable.
+                        - If you receive 'tester_feedback', use it to fix the previous version of your code.
+                        - Do not explain yourself. Just provide the code."""),
+            ("human", "Architect Plan: {architect_out}"),
             MessagesPlaceholder(variable_name="tester_feedback")
         ])
         self.coder = (
@@ -68,27 +67,33 @@ class AgentSquad():
             | self.code_prompt
             | self.coder_llm
         )
-        self.tester_llm = ChatOpenAI(openai_model, 
+        self.tester_llm = ChatOpenAI(name=openai_model, 
                                     temperature=0.0,
                                     api_key=config["OPENAI_API_KEY"],
                                     base_url=config["OPENAI_BASE_URL"])
         self.tester_prompt = ChatPromptTemplate.from_messages([
-            ("system", ("You're a helpful tester system in huge coding AI agent squad",
-                        "You're playing one of the most important roles in whole system",
-                        "Your responsibility here is to take the output code from the coding agent and test it ",
-                        "you must use provided REPL tool to execute code then observe the result ",
-                        "and give proper feedback about that code.",
-                        "YOUR MAIN GOAL IS NOT TO PASS CODE THAT DOESN'T WORK. IF code provided doesn't seem to be working",
-                        "you write a report and feedback about code in specific 'tester_feedback' variable. That feedback ",
-                        "would be added to prompt for coding AI Agent in next coding iteration.",
-                        "If code works and tests are passed. YOU return just one word in strict format: 'Passed'",
-                        "that output would be used as condition for next coding agent iteration.",
-                        "DON'T LET THE USER AND YOUR TEAM DOWN!"))
-            ("human", "coder_output")
+            ("system", """You are a meticulous Senior QA Automation Engineer. 
+            Your goal is to verify that the Coder's Python code perfectly fulfills the Architect's requirements.
+
+            OPERATING RULES:
+            1. EXECUTE: You MUST use the 'python_repl_tool' to run the provided code. Do not guess the output.
+            2. VERIFY: Create your own test assertions within the REPL to check for edge cases and mathematical correctness.
+            3. FEEDBACK: 
+            - If the code runs without error and the logic is 100% correct, reply ONLY with the word: Passed
+            - If there is a SyntaxError, logic bug, or the result is incorrect, provide a concise but technical bug report. 
+            
+            STRICT FORMAT: 
+            - If successful: "Passed"
+            - If failure: "BUG REPORT: [Describe error and provide the traceback or output received from the REPL]"
+            """),
+            ("human", "Architect's Plan: {architect_out}\n\nCoder's Implementation:\n{coder_output}"),
+            MessagesPlaceholder(variable_name="tester_feedback")
         ])
         self.tester = (
             {
-                "coder_output": lambda x: x["coder_output"]
+                "coder_output": lambda x: x["coder_output"],
+                "architect_out": lambda x: x["architect_out"],
+                "tester_feedback": lambda x: x.get("tester_feedback", []),
             }
             | self.tester_prompt
             | self.tester_llm.bind_tools(tools=self.tools, tool_choice="any")
@@ -97,53 +102,71 @@ class AgentSquad():
 
 
     def _decomposition_node(self, state: SquadState) -> SquadState:
+        # logger.info(f"[_decomposition_node] state['user_input']: {state['user_input']}")
         response = self.architect.invoke({"input": state["user_input"]})
         state["messages"].append(state["user_input"])
-        state["architect_out"] = response
+        state["architect_out"] = response.content
         logger.info(f"[USER]: {state['user_input']}")
-        logger.info(f"[AI_ARCHITECT]: {response}")
+        logger.info(f"[AI_ARCHITECT]: {response.content}")
         return state
     
     def _coding_node(self, state: SquadState) -> SquadState:
         response = self.coder.invoke({"architect_out": state["architect_out"], "tester_feedback": state["tester_feedback"]})
-        state["coder_output"] = response
-        logger.info(f"[AI_CODER]: {response}")
+        state["coder_output"] = response.content
+        logger.info(f"[AI_CODER]: {response.content}")
         return state
     
-    def _testing_node(self, state: SquadState) -> SquadState:
-        response = self.tester.invoke({"coder_output": state["coder_output"]})
+    def _testing_node(self, state: SquadState) -> dict:
+        response = self.tester.invoke({
+            "architect_out": state["architect_out"],
+            "coder_output": state["coder_output"],
+            "tester_feedback": state["tester_feedback"]
+        })
+        
         state["tester_feedback"].append(response)
-        state["tester_feedback"] = state["tester_feedback"][:4]
-        logger.info(f"[AI_TESTER]: {state["tester_feedback"]}")
-        return state
+        
+        state["tester_feedback"] = state["tester_feedback"][-6:]
+        
+        return {"tester_feedback": [response]}
     
-    def _if_errors_path(state: SquadState):
-        logger.info("[_if_errors_path] state['tester_feedback'][-1]: ", state["tester_feedback"][-1])
-        if state["tester_feedback"][-1] == "Passed":
-            return "no_errors"
-        return "errors"
+    def _if_errors_path(self, state: SquadState):
+        last_message = state["tester_feedback"][-1]
+        
+        if len(state["tester_feedback"]) > 10:
+            logger.warning("Max retries reached. Forcing completion.")
+            return "complete"
+
+        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            return "continue_testing"
+        
+        if "passed" in last_message.content.lower():
+            return "complete"
+        
+        return "recode"
 
     def _compose_graph(self, show_image: bool = True):
-        graph = StateGraph(AgentSquad)
+        graph = StateGraph(SquadState)
 
         graph.add_node("decomposition", self._decomposition_node)
         graph.add_node("coding", self._coding_node)
         graph.add_node("testing", self._testing_node)
-        graph.add_node("tools", ToolNode(tools = self.tools))
+        graph.add_node("tools", ToolNode(tools = self.tools, messages_key="tester_feedback")) # need to explicitly tell ToolNode to look for tool_calls in tester_feedback instead of messages by default
 
         graph.set_entry_point("decomposition")
         
         graph.add_edge("decomposition", "coding")
         graph.add_edge("coding", "testing")
+
         graph.add_conditional_edges(
             source="testing",
             path=self._if_errors_path,
             path_map={
-                "errors": "coding",
-                "no_errors": END
+                "continue_testing": "tools",
+                "recode": "coding",
+                "complete": END
             }
         )
-        
+        graph.add_edge("tools", "testing")
         agent = graph.compile()
 
         if show_image:
@@ -158,6 +181,6 @@ class AgentSquad():
                                 architect_out=None,
                                 tester_feedback=[]
                                 )
-        response = self.agent.invoke(init_state)
+        response = self.agent.invoke(init_state, config={"recursion_limit": 20}) # adding recursion limit for safety.
         return response
         
