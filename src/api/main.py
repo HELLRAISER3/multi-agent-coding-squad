@@ -1,39 +1,46 @@
+from src.config import *
 from src.api.agent.agent import AgentSquad
+from src.api.agent.session_store import session_store
 from src.logging import logger
-
-leet_code_problem = """
-You are given an integer array height of length n. There are n vertical lines drawn such that the two endpoints of the ith line are (i, 0) and (i, height[i]).
-
-Find two lines that together with the x-axis form a container, such that the container contains the most water.
-
-Return the maximum amount of water a container can store.
-
-Notice that you may not slant the container.
-
- 
-
-Example 1:
+from fastapi import FastAPI, Header, Body
+from pydantic import BaseModel
+import uuid
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import HTTPException
+import uuid
 
 
-Input: height = [1,8,6,2,5,4,8,3,7]
-Output: 49
-Explanation: The above vertical lines are represented by array [1,8,6,2,5,4,8,3,7]. In this case, the max area of water (blue section) the container can contain is 49.
-Example 2:
+app = FastAPI()
 
-Input: height = [1,1]
-Output: 1
+app.add_middleware(
+    CORSMiddleware,
+    # allow_origins=[FRONTEND_URL],
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"], 
+    allow_headers=["*"],  
+)
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
-class Solution:
-    def maxArea(self, height: List[int]) -> int:
+class InvokeRequest(BaseModel):
+    content: str
 
-"""
-
-if __name__ == "__main__":
-    agent_squad = AgentSquad()
-
-    # user_input = input("Your query: ")
-
-    user_input = leet_code_problem
-
-    response = agent_squad.invoke({"input": user_input}, verbose=True)
-    print(f"AI response: {response}")
+@app.post("/invoke")
+async def invoke(
+    request: InvokeRequest, 
+    x_session_id: str | None = Header(default=None)
+):
+    session_id = x_session_id or str(uuid.uuid4())
+    
+    executor = await session_store.get_or_create(session_id)
+    from fastapi.concurrency import run_in_threadpool
+    
+    result = await run_in_threadpool(
+        executor.invoke, 
+        input_data={"input": request.content}, 
+        verbose=False
+    )
+    
+    return {"output": result, "session_id": session_id}

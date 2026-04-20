@@ -1,18 +1,18 @@
-from src.api.agent.agent import StreamingAgentExecutor
+from src.api.agent.agent import AgentSquad
 import asyncio
 import time
 
 class SessionStore:
     def __init__(self, ttl_seconds: int = 1800):
-        self._store: dict[str, tuple[StreamingAgentExecutor, float]] = {}
+        self._store: dict[str, tuple[AgentSquad, float]] = {}
         self._ttl = ttl_seconds
         self._lock = asyncio.Lock()
 
-    async def get_or_create(self, session_id: str) -> StreamingAgentExecutor:
+    async def get_or_create(self, session_id: str) -> AgentSquad:
         async with self._lock:
             self._evict_expired()
             if session_id not in self._store:
-                self._store[session_id] = (StreamingAgentExecutor(), time.time())
+                self._store[session_id] = (AgentSquad(), time.time())
             executor, _ = self._store[session_id]
             self._store[session_id] = (executor, time.time())  # refresh TTL
             return executor
