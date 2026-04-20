@@ -17,5 +17,6 @@ dependencies = [
     "dotenv",
     "tiktoken",
     "langgraph",
-    "langchain-experimental"
+    "langchain-experimental",
+    "matplotlib"
 ]

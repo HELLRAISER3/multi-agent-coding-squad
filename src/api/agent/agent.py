@@ -1,12 +1,12 @@
 from typing import TypedDict, Sequence, Annotated
-from IPython.display import Image, display
-
+import matplotlib.pyplot as plt
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage, BaseMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables.config import RunnableConfig
+
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
-
 from langgraph.graph.message import add_messages
 
 from src.config import config
@@ -96,35 +96,46 @@ class AgentSquad():
                 "tester_feedback": lambda x: x.get("tester_feedback", []),
             }
             | self.tester_prompt
-            | self.tester_llm.bind_tools(tools=self.tools, tool_choice="any")
+            | self.tester_llm.bind_tools(tools=self.tools, tool_choice="auto")
         )
         self.agent = self._compose_graph(show_image=True)
 
 
-    def _decomposition_node(self, state: SquadState) -> SquadState:
+    def _decomposition_node(self, state: SquadState, config: RunnableConfig) -> SquadState:
         # logger.info(f"[_decomposition_node] state['user_input']: {state['user_input']}")
+        params = config.get("configurable", {})
+        verbose = params.get("verbose", False)
+
         response = self.architect.invoke({"input": state["user_input"]})
         state["messages"].append(state["user_input"])
         state["architect_out"] = response.content
-        logger.info(f"[USER]: {state['user_input']}")
-        logger.info(f"[AI_ARCHITECT]: {response.content}")
+        if verbose:
+            logger.info(f"[USER]: {state['user_input']}")
+            logger.info(f"[AI_ARCHITECT]: {response.content}")
         return state
     
-    def _coding_node(self, state: SquadState) -> SquadState:
+    def _coding_node(self, state: SquadState, config: RunnableConfig) -> SquadState:
+        params = config.get("configurable", {})
+        verbose = params.get("verbose", False)
+
         response = self.coder.invoke({"architect_out": state["architect_out"], "tester_feedback": state["tester_feedback"]})
         state["coder_output"] = response.content
-        logger.info(f"[AI_CODER]: {response.content}")
+        if verbose:
+            logger.info(f"[AI_CODER]: {response.content}")
         return state
     
-    def _testing_node(self, state: SquadState) -> dict:
+    def _testing_node(self, state: SquadState, config: RunnableConfig) -> dict:
+        params = config.get("configurable", {})
+        verbose = params.get("verbose", False)
+
         response = self.tester.invoke({
             "architect_out": state["architect_out"],
             "coder_output": state["coder_output"],
             "tester_feedback": state["tester_feedback"]
         })
-        
+        if verbose:
+            logger.info(f"[AI_TESTER]: {response.content}")
         state["tester_feedback"].append(response)
-        
         state["tester_feedback"] = state["tester_feedback"][-6:]
         
         return {"tester_feedback": [response]}
@@ -170,7 +181,9 @@ class AgentSquad():
         agent = graph.compile()
 
         if show_image:
-            display(Image(agent.get_graph().draw_mermaid_png()))
+            with open("media/graph.png", "wb") as f:
+                f.write(agent.get_graph().draw_mermaid_png())
+            print("Graph saved to graph.png")   
 
         return agent
 
@@ -181,6 +194,6 @@ class AgentSquad():
                                 architect_out=None,
                                 tester_feedback=[]
                                 )
-        response = self.agent.invoke(init_state, config={"recursion_limit": 20}) # adding recursion limit for safety.
+        response = self.agent.invoke(init_state, config={"verbose": verbose, "recursion_limit": 20})["coder_output"] # adding recursion limit for safety.
         return response
         
