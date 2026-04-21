@@ -57,7 +57,9 @@ class AgentSquad():
                         - Provide ONLY the Python code.
                         - Ensure the code is self-contained and runnable.
                         - If you receive 'tester_feedback', use it to fix the previous version of your code.
-                        - Do not explain yourself. Just provide the code."""),
+                        - Do not explain yourself. Just provide the code. In strict format. Example: 'def calculate_area(radius):\n    return 3.14 * (radius ** 2)\n\nprint(calculate_area(5))'
+                        - you don't have to write extra words or symbols only code. Fully runnable accurate code. 
+             """),
             ("human", "Architect Plan: {architect_out}"),
             MessagesPlaceholder(variable_name="tester_feedback")
         ])
@@ -105,12 +107,12 @@ class AgentSquad():
         self.agent = self._compose_graph(show_image=True)
 
 
-    def _decomposition_node(self, state: SquadState, config: RunnableConfig) -> SquadState:
+    async def _decomposition_node(self, state: SquadState, config: RunnableConfig) -> SquadState:
         # logger.info(f"[_decomposition_node] state['user_input']: {state['user_input']}")
         params = config.get("configurable", {})
         verbose = params.get("verbose", False)
 
-        response = self.architect.invoke({"input": state["user_input"]})
+        response = await self.architect.ainvoke({"input": state["user_input"]})
         state["messages"].append(state["user_input"])
         state["architect_out"] = response.content
         if verbose:
@@ -118,35 +120,37 @@ class AgentSquad():
             logger.info(f"[AI_ARCHITECT]: {response.content}")
         return state
     
-    def _coding_node(self, state: SquadState, config: RunnableConfig) -> dict:
+    async def _coding_node(self, state: SquadState, config: RunnableConfig) -> dict:
         params = config.get("configurable", {})
         verbose = params.get("verbose", False)
-        logger.info(f"[_coding_node] state['tester_feedback']: {state["tester_feedback"]}")
-        logger.info(f"[_coding_node] state['architect_out']: {state["architect_out"]}")
+        # logger.info(f"[_coding_node] state['tester_feedback']: {state["tester_feedback"]}")
+        # logger.info(f"[_coding_node] state['architect_out']: {state["architect_out"]}")
 
-        response = self.coder.invoke({"architect_out": state["architect_out"], "tester_feedback": state["tester_feedback"]})
+        response = await self.coder.ainvoke({"architect_out": state["architect_out"], 
+                                       "tester_feedback": list(state["tester_feedback"])[-4:]})
+        
         state["coder_output"] = response.content
-        if verbose:
-            logger.info(f"[AI_CODER]: {response.content}")
+        # if verbose:
+        logger.info(f"[AI_CODER]: {response.content}")
         
         return {
             "coder_output": response.content,
             "recode_attempts": state.get("recode_attempts", 0) + 1
         }
     
-    def _testing_node(self, state: SquadState, config: RunnableConfig) -> dict:
+    async def _testing_node(self, state: SquadState, config: RunnableConfig) -> dict:
         params = config.get("configurable", {})
         verbose = params.get("verbose", False)
 
         recent_feedback = list(state["tester_feedback"])[-4:]
 
-        response = self.tester.invoke({
+        response = await self.tester.ainvoke({
             "architect_out": state["architect_out"],
             "coder_output": state["coder_output"],
             "tester_feedback": recent_feedback
         })
-        if verbose:
-            logger.info(f"[AI_TESTER]: {response.content}")
+        # if verbose:
+        logger.info(f"[AI_TESTER]: {response.content}")
 
         # add_messages reducer will accumulate messages
         return {
@@ -171,13 +175,19 @@ class AgentSquad():
 
         return "recode"
 
+    async def _tools_node(self, state: SquadState, config: RunnableConfig) -> dict:
+        loop = asyncio.get_event_loop()
+        tool_node = ToolNode(tools=self.tools, messages_key="tester_feedback")
+        result = await loop.run_in_executor(None, lambda: tool_node.invoke(state, config))
+        return result
+
     def _compose_graph(self, show_image: bool = True):
         graph = StateGraph(SquadState)
 
         graph.add_node("decomposition", self._decomposition_node)
         graph.add_node("coding", self._coding_node)
         graph.add_node("testing", self._testing_node)
-        graph.add_node("tools", ToolNode(tools = self.tools, messages_key="tester_feedback")) # need to explicitly tell ToolNode to look for tool_calls in tester_feedback instead of messages by default
+        graph.add_node("tools", self._tools_node)  # need to explicitly tell ToolNode to look for tool_calls in tester_feedback instead of messages by default
 
         graph.set_entry_point("decomposition")
         
@@ -214,17 +224,29 @@ class AgentSquad():
         return response
 
     async def event_generator(self, content, session_id):
+        final_coder_output = None
+        
         async for event in self.agent.astream(
-            {"user_input": content, "messages": [], "tester_feedback": []},
+            {"user_input": content, "messages": [], "tester_feedback": [], "recode_attempts": 0},
             config={"recursion_limit": 20}
         ):
             for node_name, output in event.items():
+                if node_name == "__end__":
+                    continue
+                
+                if output.get("coder_output"):
+                    final_coder_output = output["coder_output"]
+                
                 data = {
                     "node": node_name,
-                    "content": output.get("coder_output") or output.get("architect_out") or "Processing...",
+                    "content": (output.get("coder_output") or 
+                            output.get("architect_out") or 
+                            "Processing..."),
                     "session_id": session_id
                 }
                 yield f"data: {json.dumps(data)}\n\n"
             
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0)
         
+        if final_coder_output:
+            yield f"data: {json.dumps({'node': 'final', 'content': final_coder_output, 'session_id': session_id})}\n\n"

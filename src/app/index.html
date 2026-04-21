@@ -46,6 +46,8 @@
 
         async function sendRequest() {
             const inputField = document.getElementById('user-input');
+            document.getElementById('status').textContent = 'Processing...';
+            document.getElementById('status').className = 'text-xs uppercase tracking-widest text-green-400 animate-pulse';
             const content = inputField.value.trim();
             if (!content) return;
 
@@ -80,9 +82,19 @@
                                 const nodeTitles = {
                                     "decomposition": "AI_ARCHITECT",
                                     "coding": "AI_CODER",
-                                    "testing": "AI_TESTER"
+                                    "testing": "AI_TESTER",
+                                    "final": "FINAL_ANSWER"
                                 };
-                                renderMessage(nodeTitles[data.node] || data.node, data.content, 'text-yellow-400', data.node === "coding");
+                                if (data.node === "final") {
+                                    renderFinalAnswer(data.content);
+                                } else {
+                                    renderMessage(
+                                        nodeTitles[data.node] || data.node, 
+                                        data.content, 
+                                        'text-yellow-400', 
+                                        data.node === "coding"
+                                    );
+                                }
                             } catch (e) {
                                 console.error("Error parsing stream chunk", e);
                             }
@@ -106,6 +118,24 @@
             div.innerHTML = header + body;
             container.appendChild(div);
             container.scrollTop = container.scrollHeight;
+        }
+        function renderFinalAnswer(code) {
+            const container = document.getElementById('chat-container');
+            const div = document.createElement('div');
+            div.className = "space-y-2 mb-8 border border-green-700 rounded-lg p-4 bg-green-950/30";
+            div.innerHTML = `
+                <div class="text-xs font-bold text-green-400">[FINAL_ANSWER]</div>
+                <pre class="bg-zinc-900 p-4 rounded border border-green-800 text-sm text-green-300"><code>${code}</code></pre>
+                <button onclick="navigator.clipboard.writeText(this.dataset.code)" 
+                        data-code="${code.replace(/"/g, '&quot;')}"
+                        class="text-xs text-zinc-400 hover:text-green-400 transition-colors mt-2">
+                    📋 Copy to clipboard
+                </button>
+            `;
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+            document.getElementById('status').textContent = 'System Idle';
+            document.getElementById('status').className = 'text-xs uppercase tracking-widest text-zinc-500';
         }
     </script>
 </body>

@@ -33,4 +33,14 @@ async def invoke(request: InvokeRequest, x_session_id: str | None = Header(defau
     session_id = x_session_id or str(uuid.uuid4())
     executor = await session_store.get_or_create(session_id)
 
-    return StreamingResponse(executor.event_generator(request.content, session_id), media_type="text/event-stream")
+    async def safe_stream():
+        try:
+            async for chunk in executor.event_generator(request.content, session_id):
+                yield chunk
+        except asyncio.TimeoutError:
+            yield f"data: {json.dumps({'node': 'error', 'content': 'Timeout', 'session_id': session_id})}\n\n"
+        except Exception as e:
+            logger.error(f"Stream error: {e}")
+            yield f"data: {json.dumps({'node': 'error', 'content': str(e), 'session_id': session_id})}\n\n"
+
+    return StreamingResponse(safe_stream(), media_type="text/event-stream")
