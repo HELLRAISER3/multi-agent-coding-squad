@@ -3,12 +3,13 @@ from src.api.agent.agent import AgentSquad
 from src.api.agent.session_store import session_store
 from src.logging import logger
 from fastapi import FastAPI, Header, Body
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import uuid
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.exceptions import HTTPException
 import uuid
-
+import asyncio
+import json
 
 app = FastAPI()
 
@@ -28,19 +29,8 @@ class InvokeRequest(BaseModel):
     content: str
 
 @app.post("/invoke")
-async def invoke(
-    request: InvokeRequest, 
-    x_session_id: str | None = Header(default=None)
-):
+async def invoke(request: InvokeRequest, x_session_id: str | None = Header(default=None)):
     session_id = x_session_id or str(uuid.uuid4())
-    
     executor = await session_store.get_or_create(session_id)
-    from fastapi.concurrency import run_in_threadpool
-    
-    result = await run_in_threadpool(
-        executor.invoke, 
-        input_data={"input": request.content}, 
-        verbose=False
-    )
-    
-    return {"output": result, "session_id": session_id}
+
+    return StreamingResponse(executor.event_generator(request.content, session_id), media_type="text/event-stream")

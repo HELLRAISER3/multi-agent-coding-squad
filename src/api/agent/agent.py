@@ -13,12 +13,16 @@ from src.config import config
 from src.api.agent.tools import *
 from src.logging import logger
 
+import json
+import asyncio
+
 class SquadState(TypedDict):
     user_input: str
     messages: Annotated[Sequence[BaseMessage], add_messages]
     architect_out: str
     coder_output: str
     tester_feedback: Annotated[Sequence[AIMessage], add_messages]
+    recode_attempts: int
 
 class AgentSquad():
     def __init__(self):
@@ -31,11 +35,9 @@ class AgentSquad():
                                     api_key=config["OPENAI_API_KEY"],
                                     base_url=config["OPENAI_BASE_URL"])
         self.architect_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You're helpful architect assistant in coding AI agent squad",
-                        "Your responsibility in the first place is to take users' query ",
-                        "and decompose it into meaningful technical tasks that will be passed to",
-                        " the Coding AI agent that must develop fully-working solution without a single mistake."
-                        """),
+            ("system", """You're a helpful architect assistant in a coding AI agent squad.
+            Your responsibility is to take users' query and decompose it into meaningful 
+            technical tasks for a Python Coding AI agent that must develop a fully-working solution."""),
             ("human", "{input}"),
         ])
         self.architect = (
@@ -76,8 +78,10 @@ class AgentSquad():
             Your goal is to verify that the Coder's Python code perfectly fulfills the Architect's requirements.
 
             OPERATING RULES:
-            1. EXECUTE: You MUST use the 'python_repl_tool' to run the provided code. Do not guess the output.
-            2. VERIFY: Create your own test assertions within the REPL to check for edge cases and mathematical correctness.
+            1. EXECUTE: You MUST use 'python_repl_tool'. 
+            IMPORTANT: Always use print() to display results. Bare expressions return nothing.
+            Example: print(f"Result: add(3, 5)") and print(f"Assert: add(3,5) == 8")
+            2. VERIFY: Use print(assert ...) style checks so you can SEE the output.
             3. FEEDBACK: 
             - If the code runs without error and the logic is 100% correct, reply ONLY with the word: Passed
             - If there is a SyntaxError, logic bug, or the result is incorrect, provide a concise but technical bug report. 
@@ -114,45 +118,57 @@ class AgentSquad():
             logger.info(f"[AI_ARCHITECT]: {response.content}")
         return state
     
-    def _coding_node(self, state: SquadState, config: RunnableConfig) -> SquadState:
+    def _coding_node(self, state: SquadState, config: RunnableConfig) -> dict:
         params = config.get("configurable", {})
         verbose = params.get("verbose", False)
+        logger.info(f"[_coding_node] state['tester_feedback']: {state["tester_feedback"]}")
+        logger.info(f"[_coding_node] state['architect_out']: {state["architect_out"]}")
 
         response = self.coder.invoke({"architect_out": state["architect_out"], "tester_feedback": state["tester_feedback"]})
         state["coder_output"] = response.content
         if verbose:
             logger.info(f"[AI_CODER]: {response.content}")
-        return state
+        
+        return {
+            "coder_output": response.content,
+            "recode_attempts": state.get("recode_attempts", 0) + 1
+        }
     
     def _testing_node(self, state: SquadState, config: RunnableConfig) -> dict:
         params = config.get("configurable", {})
         verbose = params.get("verbose", False)
 
+        recent_feedback = list(state["tester_feedback"])[-4:]
+
         response = self.tester.invoke({
             "architect_out": state["architect_out"],
             "coder_output": state["coder_output"],
-            "tester_feedback": state["tester_feedback"]
+            "tester_feedback": recent_feedback
         })
         if verbose:
             logger.info(f"[AI_TESTER]: {response.content}")
-        state["tester_feedback"].append(response)
-        state["tester_feedback"] = state["tester_feedback"][-6:]
-        
-        return {"tester_feedback": [response]}
+
+        # add_messages reducer will accumulate messages
+        return {
+            "tester_feedback": [response],
+            "recode_attempts": state.get("recode_attempts", 0)
+        }
+
     
     def _if_errors_path(self, state: SquadState):
         last_message = state["tester_feedback"][-1]
-        
-        if len(state["tester_feedback"]) > 10:
-            logger.warning("Max retries reached. Forcing completion.")
+
+        if isinstance(last_message, AIMessage) and last_message.tool_calls:
+            return "continue_testing"
+
+        if isinstance(last_message, AIMessage) and "passed" in last_message.content.lower():
             return "complete"
 
-        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-            return "continue_testing"
-        
-        if "passed" in last_message.content.lower():
+        attempts = state.get("recode_attempts", 0)
+        if attempts >= 3:
+            logger.warning("Max recode attempts reached.")
             return "complete"
-        
+
         return "recode"
 
     def _compose_graph(self, show_image: bool = True):
@@ -196,4 +212,19 @@ class AgentSquad():
                                 )
         response = self.agent.invoke(init_state, config={"verbose": verbose, "recursion_limit": 20})["coder_output"] # adding recursion limit for safety.
         return response
+
+    async def event_generator(self, content, session_id):
+        async for event in self.agent.astream(
+            {"user_input": content, "messages": [], "tester_feedback": []},
+            config={"recursion_limit": 20}
+        ):
+            for node_name, output in event.items():
+                data = {
+                    "node": node_name,
+                    "content": output.get("coder_output") or output.get("architect_out") or "Processing...",
+                    "session_id": session_id
+                }
+                yield f"data: {json.dumps(data)}\n\n"
+            
+            await asyncio.sleep(0.1)
         

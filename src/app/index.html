@@ -46,56 +46,53 @@
 
         async function sendRequest() {
             const inputField = document.getElementById('user-input');
-            const chatContainer = document.getElementById('chat-container');
-            const status = document.getElementById('status');
-            const btn = document.getElementById('send-btn');
-            
             const content = inputField.value.trim();
             if (!content) return;
 
-            // UI Updates
-            status.innerText = "Processing...";
-            status.classList.add('text-yellow-500');
-            btn.disabled = true;
-            btn.classList.add('opacity-50');
+            renderMessage('User', content, 'text-blue-400');
+            inputField.value = "";
 
             try {
-                // Construct URL with query parameters
-                const params = new URLSearchParams({ content: content });
                 const response = await fetch(`${API_URL}/invoke`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json', // Critical
-                    'x-session-id': sessionId
-                },
-                body: JSON.stringify({ content: content }) // Send as JSON body
-            });
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content: content })
+                });
 
-                if (!response.ok) throw new Error("Agent failed to respond.");
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                // This loop runs as long as the stream is open
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
 
-                const data = await response.json();
-
-                const squadResult = data.output; 
-
-                if (data.session_id) {
-                    sessionId = data.session_id;
-                    localStorage.setItem('squad_session_id', sessionId);
+                    const chunk = decoder.decode(value);
+                    // SSE chunks can contain multiple 'data:' lines
+                    const lines = chunk.split('\n\n');
+                    
+                    lines.forEach(line => {
+                        if (line.startsWith('data: ')) {
+                            const jsonStr = line.replace('data: ', '');
+                            try {
+                                const data = JSON.parse(jsonStr);
+                                // Map the node names to pretty titles
+                                const nodeTitles = {
+                                    "decomposition": "AI_ARCHITECT",
+                                    "coding": "AI_CODER",
+                                    "testing": "AI_TESTER"
+                                };
+                                renderMessage(nodeTitles[data.node] || data.node, data.content, 'text-yellow-400', data.node === "coding");
+                            } catch (e) {
+                                console.error("Error parsing stream chunk", e);
+                            }
+                        }
+                    });
                 }
-
-                renderMessage('User', content, 'text-blue-400');
-                renderMessage('AI_CODER_OUTPUT', squadResult, 'text-green-400', true);
-
             } catch (err) {
                 renderMessage('SYSTEM_ERROR', err.message, 'text-red-500');
-            } finally {
-                status.innerText = "System Idle";
-                status.classList.remove('text-yellow-500');
-                btn.disabled = false;
-                btn.classList.remove('opacity-50');
-                inputField.value = "";
             }
         }
-
         function renderMessage(role, text, colorClass, isCode = false) {
             const container = document.getElementById('chat-container');
             const div = document.createElement('div');
