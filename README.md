@@ -8,9 +8,9 @@
 
 A small multi-agent system where three AI agents collaborate to write and verify code:
 
-- **Architect** — takes your request and breaks it down into a clear technical plan
-- **Coder** — implements the plan, fixes bugs if the tester complains
-- **Tester** — runs the code in a REPL, checks the output, and either signs off or files a bug report
+- **Architect** - takes your request and breaks it down into a clear technical plan
+- **Coder** - implements the plan, fixes bugs if the tester complains
+- **Tester** - runs the code in a REPL, checks the output, and either signs off or files a bug report
 
 If the tester finds a problem, the coder tries again.
 
@@ -18,11 +18,11 @@ If the tester finds a problem, the coder tries again.
 
 ## Stack
 
-- [LangGraph](https://github.com/langchain-ai/langgraph) — agent graph orchestration
-- [LangChain](https://github.com/langchain-ai/langchain) — LLM wrappers and prompt templates
-- [FastAPI](https://fastapi.tiangolo.com/) + [Uvicorn](https://www.uvicorn.org/) — async HTTP server with SSE streaming
+- [LangGraph](https://github.com/langchain-ai/langgraph) - agent graph orchestration
+- [LangChain](https://github.com/langchain-ai/langchain) - LLM wrappers and prompt templates
+- [FastAPI](https://fastapi.tiangolo.com/) + [Uvicorn](https://www.uvicorn.org/) - async HTTP server with SSE streaming
 - OpenAI-compatible API (configured via OpenRouter or direct OpenAI)
-- Vanilla HTML/JS frontend — no build step needed
+- Vanilla HTML/JS frontend - no build step needed
 
 ---
 
@@ -35,7 +35,7 @@ multi-agent-coding-squad/
 │   │   ├── agent/
 │   │   │   ├── agent.py        # AgentSquad — all three agents + graph definition
 │   │   │   ├── tools.py        # python_repl_tool
-│   │   │   └── session_store.py# TTL-based session cache
+│   │   │   └── session_store.py # TTL-based session cache
 │   │   └── main.py             # FastAPI app + /invoke endpoint
 │   ├── config.py
 │   └── logging.py
